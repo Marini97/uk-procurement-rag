@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Small and fast model for generating local embeddings
 MODEL_NAME = "all-MiniLM-L6-v2"
-BATCH_SIZE = 500
+BATCH_SIZE = 2000
 
 def parse_release(release):
     """
@@ -23,11 +23,11 @@ def parse_release(release):
     release_date = release.get("date", None)
     
     # Tender info
-    tender = release.get("tender", {})
-    tender_id = tender.get("id", "")
-    title = tender.get("title", "")
-    description = tender.get("description", "")
-    proc_method = tender.get("procurementMethod", "")
+    tender = release.get("tender") or {}
+    tender_id = tender.get("id") or ""
+    title = tender.get("title") or "Untitled"
+    description = tender.get("description") or ""
+    proc_method = tender.get("procurementMethod") or "Unknown"
     
     # Categories / CPV
     items = tender.get("items", [])
@@ -39,19 +39,19 @@ def parse_release(release):
         if clazz.get("description"): cpv_descriptions.append(clazz["description"])
         
     # Parties (Buyers)
-    parties = release.get("parties", [])
-    buyers = [p.get("name") for p in parties if "buyer" in p.get("roles", [])]
-    buyer_name = buyers[0] if buyers else ""
+    parties = release.get("parties") or []
+    buyers = [p.get("name") for p in parties if "buyer" in (p.get("roles") or [])]
+    buyer_name = next((b for b in buyers if b), "Unknown")
     
     # Awards & Suppliers mapped by award ID
-    awards = release.get("awards", [])
+    awards = release.get("awards") or []
     award_map = {}
     for award in awards:
-        suppliers = award.get("suppliers", [])
+        suppliers = award.get("suppliers") or []
         supplier_names = [s.get("name") for s in suppliers if s.get("name")]
         award_map[award.get("id")] = supplier_names
 
-    contracts = release.get("contracts", [])
+    contracts = release.get("contracts") or []
     
     docs = []
     
@@ -64,12 +64,12 @@ def parse_release(release):
     else:
         # Generate a doc per contract
         for contract in contracts:
-            contract_id = contract.get("id", "")
-            contract_status = contract.get("status", "")
+            contract_id = contract.get("id") or ""
+            contract_status = contract.get("status") or "Unknown"
             
-            val = contract.get("value", {})
-            value_amount = val.get("amount", 0.0)
-            value_currency = val.get("currency", "")
+            val = contract.get("value") or {}
+            value_amount = val.get("amount") or 0.0
+            value_currency = val.get("currency") or ""
             
             # Link to award suppliers
             award_id = contract.get("awardID", "")
@@ -101,8 +101,12 @@ def create_doc(ocid, notice_id, release_date, tender_id, title, description,
     if description:
         # Limit description to prevent massive embeddings, first ~500 chars is usually enough for RAG context
         chunk_text += f"Description: {description[:500]}...\n"
+    
+    # Generate unique deterministic ID for deduplicating repeated releases in Elasticsearch
+    doc_id = f"{ocid}-{notice_id}-{contract_id or 'tender'}"
         
     return {
+        "_id": doc_id,
         "ocid": ocid,
         "notice_id": notice_id,
         "release_date": release_date,

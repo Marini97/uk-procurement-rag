@@ -1,4 +1,8 @@
-elasticsearch>=8.10.0
+elasticsearch>=9.4.1
 sentence-transformers>=2.2.2
 tqdm>=4.66.1
 pydantic>=2.4.0
+fastapi
+uvicorn
+jinja2
+python-multipart

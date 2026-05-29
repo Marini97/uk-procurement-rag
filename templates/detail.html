@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contract Detail - {{ ocid }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans p-6 md:p-12">
+    <div class="container mx-auto max-w-4xl bg-white rounded-lg shadow-xl overflow-hidden border border-gray-100">
+        {% if contract %}
+            <div class="bg-blue-800 text-white p-8">
+                <div class="flex justify-between items-start gap-4 flex-col md:flex-row">
+                    <div>
+                        <h1 class="text-3xl font-bold mb-3 leading-tight">{{ contract.title or 'Untitled Contract' }}</h1>
+                        <div class="flex items-center gap-3 text-blue-200 text-sm font-mono bg-blue-900/50 inline-flex px-3 py-1 rounded">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                            OCID: {{ contract.ocid }}
+                        </div>
+                    </div>
+                    <span class="bg-white text-blue-800 px-4 py-1.5 rounded-full text-sm font-bold uppercase tracking-wider whitespace-nowrap shadow-sm">
+                        {{ contract.contract_status or 'Unknown Status' }}
+                    </span>
+                </div>
+            </div>
+
+            <div class="p-6 md:p-10 space-y-10">
+                <!-- Overview Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div class="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm">
+                        <h3 class="text-gray-500 text-xs uppercase tracking-widest font-semibold mb-2 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            Value
+                        </h3>
+                        <p class="text-3xl font-bold text-gray-900">
+                            {% if contract.value_amount %}
+                                {{ contract.value_currency }} {{ "{:,.2f}".format(contract.value_amount) }}
+                            {% else %}
+                                N/A
+                            {% endif %}
+                        </p>
+                    </div>
+                    <div class="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm">
+                        <h3 class="text-gray-500 text-xs uppercase tracking-widest font-semibold mb-2 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                            Procurement Method
+                        </h3>
+                        <p class="text-2xl font-medium text-gray-900">{{ contract.procurement_method|capitalize or 'N/A' }}</p>
+                    </div>
+                    <div class="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm">
+                        <h3 class="text-gray-500 text-xs uppercase tracking-widest font-semibold mb-2 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                            Release Date
+                        </h3>
+                        <p class="text-2xl font-medium text-gray-900">{{ contract.release_date[:10] if contract.release_date else 'N/A' }}</p>
+                    </div>
+                </div>
+
+                <!-- Description -->
+                <div>
+                    <h2 class="text-2xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+                        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg>
+                        Description
+                    </h2>
+                    <div class="bg-white text-gray-700 whitespace-pre-wrap leading-relaxed text-lg border-l-4 border-blue-500 pl-4 py-2">
+                        {{ contract.description or 'No description available.' }}
+                    </div>
+                </div>
+
+                <!-- Parties -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 bg-gray-50 p-6 rounded-xl border border-gray-100">
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-900 mb-4 border-b border-gray-200 pb-2 flex items-center gap-2">
+                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                            Buyer
+                        </h2>
+                        <p class="text-gray-800 font-semibold text-lg">{{ contract.buyer_name or 'N/A' }}</p>
+                    </div>
+                    <div>
+                        <h2 class="text-xl font-bold text-gray-900 mb-4 border-b border-gray-200 pb-2 flex items-center gap-2">
+                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                            Supplier(s)
+                        </h2>
+                        <ul class="space-y-2">
+                            {% if contract.supplier_names %}
+                                {% for supplier in contract.supplier_names %}
+                                    <li class="bg-white px-3 py-2 rounded shadow-sm border border-gray-100 flex items-center gap-2">
+                                        <div class="w-2 h-2 rounded-full bg-green-500"></div>
+                                        <span class="text-gray-800 font-medium">{{ supplier }}</span>
+                                    </li>
+                                {% endfor %}
+                            {% else %}
+                                <li class="text-gray-500 italic">N/A</li>
+                            {% endif %}
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Classifications -->
+                <div>
+                    <h2 class="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2 border-b pb-2">
+                        <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"></path></svg>
+                        Classifications (CPV)
+                    </h2>
+                    <div class="grid grid-cols-1 gap-3">
+                        {% if contract.cpv_codes %}
+                            {% set codes = contract.cpv_codes|default([]) %}
+                            {% set descs = contract.cpv_descriptions|default([]) %}
+                            {% for i in range([codes|length, descs|length]|min) %}
+                                <div class="flex items-center bg-gray-50 p-3 rounded-lg border border-gray-100 hover:border-blue-200 transition">
+                                    <span class="bg-blue-100 text-blue-800 text-xs font-bold font-mono px-3 py-1.5 rounded-md mr-4 shadow-sm w-24 text-center">{{ codes[i] }}</span>
+                                    <span class="text-gray-700 font-medium">{{ descs[i] }}</span>
+                                </div>
+                            {% endfor %}
+                        {% else %}
+                            <p class="text-gray-500 italic p-4 bg-gray-50 rounded text-center">No classifications provided.</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="pt-8 mt-8 border-t border-gray-200 flex justify-center">
+                    <button onclick="window.close()" class="bg-white border-2 border-gray-300 text-gray-700 px-8 py-3 rounded-lg hover:bg-gray-50 hover:border-gray-400 font-bold tracking-wide transition shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-200">
+                        Close Details
+                    </button>
+                </div>
+            </div>
+        {% else %}
+            <div class="p-16 text-center bg-gray-50">
+                <svg class="w-20 h-20 text-gray-300 mx-auto mb-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <h1 class="text-3xl font-bold text-gray-800 mb-3">Contract Not Found</h1>
+                <p class="text-gray-500 mb-8 text-lg">We couldn't find a contract matching OCID: <span class="font-mono bg-gray-200 px-2 py-1 rounded text-gray-700">{{ ocid }}</span></p>
+                <button onclick="window.close()" class="bg-blue-600 text-white px-8 py-3 rounded-lg hover:bg-blue-700 font-bold tracking-wide transition shadow-md">
+                    Return to Search
+                </button>
+            </div>
+        {% endif %}
+    </div>
+</body>
+</html>
