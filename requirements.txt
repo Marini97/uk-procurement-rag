@@ -1,0 +1,4 @@
+elasticsearch>=8.10.0
+sentence-transformers>=2.2.2
+tqdm>=4.66.1
+pydantic>=2.4.0
