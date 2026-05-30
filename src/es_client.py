@@ -1,6 +1,11 @@
 import logging
+import os
+import json
+import re
+from functools import lru_cache
 import spacy
-from typing import Optional
+import torch
+from typing import Optional, Any
 from elasticsearch import Elasticsearch, helpers
 from sentence_transformers import SentenceTransformer
 
@@ -10,51 +15,9 @@ logger = logging.getLogger(__name__)
 INDEX_NAME = "fts_contracts"
 EMBEDDING_DIM = 384  # all-MiniLM-L6-v2
 
-embedder = SentenceTransformer("all-MiniLM-L6-v2")
+embedder = SentenceTransformer("all-MiniLM-L6-v2", device="cuda" if torch.cuda.is_available() else "cpu")
 
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    logger.warning("spaCy model not found. Run: python -m spacy download en_core_web_sm")
-    nlp = None
-
-PROCUREMENT_METHOD_KEYWORDS = {
-    "framework agreement": "Framework Agreement",
-    "framework": "Framework Agreement",
-    "open procedure": "open",
-    "open tender": "open",
-    "direct award": "direct",
-    "direct": "direct",
-    "restricted": "selective",
-    "negotiated": "negotiated",
-    "competitive dialogue": "competitive dialogue",
-    "dynamic purchasing": "dynamic purchasing system",
-}
-
-SERVICE_KEYWORDS = {
-    # common natural-language service/categories -> search keywords
-    "it services": "IT services",
-    "information technology": "IT services",
-    "cloud services": "cloud services",
-    "cloud": "cloud services",
-    "construction": "construction",
-    "architectural": "construction",
-    "facilities management": "facilities management",
-    "consultancy": "consultancy",
-    "legal": "legal services",
-}
-
-BUYER_KEYWORDS = {
-    "nhs": "NHS",
-    "national health service": "NHS",
-    "nhs england": "NHS England",
-}
-
-CONTRACT_STATUS_KEYWORDS = {
-    "awarded": "active",
-    "award": "active",
-    "awards": "active",
-}
+nlp = spacy.load("en_core_web_sm")
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +154,7 @@ def restore_index_settings(es: Elasticsearch) -> None:
         body={"refresh_interval": "1s", "number_of_replicas": 1},
     )
     es.indices.forcemerge(index=INDEX_NAME, max_num_segments=5)
+    es.indices.refresh(index=INDEX_NAME)
     logger.info("Restored refresh interval and replicas. Force-merge triggered.")
 
 
@@ -212,19 +176,143 @@ def bulk_index_docs(es: Elasticsearch, documents: list) -> int:
             action["_id"] = doc.pop("_id")
         actions.append(action)
 
-    success, failed = helpers.bulk(
+    success, errors = helpers.bulk(
         es,
         actions,
-        stats_only=True,
+        stats_only=False,
         raise_on_error=False,
         chunk_size=500,
         request_timeout=120,
     )
-    if failed:
-        logger.warning(f"Bulk index: {success} OK, {failed} FAILED")
-    else:
-        logger.info(f"Bulk index: {success} documents indexed successfully")
+    for err in errors[:5]:
+        logger.error(f"Bulk index error: {err}")
+    logger.info(f"Bulk index: {success} documents indexed successfully")
     return success
+
+
+INTENT_FILTER_KEYS = {"procurement_method", "buyer_name", "contract_status", "is_framework"}
+
+
+@lru_cache(maxsize=4)
+def _load_intent_pipeline(model_name: str):
+    """Load and cache a text-generation pipeline for intent extraction."""
+    try:
+        from transformers import pipeline
+
+        return pipeline(
+            "text-generation",
+            model=model_name,
+            device_map="auto" if torch.cuda.is_available() and os.environ.get("LOCAL_GPU") else None,
+        )
+    except Exception as exc:
+        logger.warning("Unable to load intent model '%s': %s", model_name, exc)
+        return None
+
+
+def _extract_json_block(text: str) -> dict[str, Any] | None:
+    """Best-effort extraction of the first JSON object from model output."""
+    if not text:
+        return None
+
+    candidates = []
+    fenced = re.findall(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    candidates.extend(fenced)
+    brace_match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if brace_match:
+        candidates.append(brace_match.group(0))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _normalize_intent_payload(payload: dict[str, Any], query_text: str) -> dict:
+    """Normalize model output into the intent schema expected by search_contracts."""
+    filters = payload.get("filters") or {}
+    normalized_filters = {k: v for k, v in filters.items() if k in INTENT_FILTER_KEYS and v not in (None, "")}
+
+    services = payload.get("services") or []
+    locations = payload.get("locations") or []
+    clean_text = payload.get("clean_text") or query_text
+
+    if isinstance(services, str):
+        services = [services]
+    if isinstance(locations, str):
+        locations = [locations]
+
+    return {
+        "raw": payload.get("raw") or query_text,
+        "filters": normalized_filters,
+        "locations": [loc for loc in locations if loc],
+        "services": [svc for svc in services if svc],
+        "clean_text": clean_text,
+    }
+
+
+def _extract_intent_with_llm(query_text: str, model_name: Optional[str] = None) -> dict | None:
+    """Ask a text-generation model to turn a query into structured procurement intent."""
+    chosen_model = model_name or os.environ.get("QUERY_INTENT_MODEL") or os.environ.get("RAG_MODEL")
+    if not chosen_model:
+        return None
+
+    pipe = _load_intent_pipeline(chosen_model)
+    if pipe is None:
+        return None
+
+    prompt = (
+        "Extract procurement search intent from the user query. Return ONLY valid JSON. "
+        "Use this schema: {"
+        '"raw": string, '
+        '"filters": {"procurement_method"?: string, "buyer_name"?: string, '
+        '"contract_status"?: string, "is_framework"?: boolean}, '
+        '"locations": string[], "services": string[], "clean_text": string' 
+        "}. "
+        "If a field is not present, omit it or leave it empty. "
+        "Infer framework, buyer, contract status, service type, and location from meaning, not keyword rules. "
+        f"Query: {query_text}"
+    )
+
+    try:
+        output = pipe(prompt, max_new_tokens=220, do_sample=False, return_full_text=False)
+        generated = output[0].get("generated_text", "") if output else ""
+        payload = _extract_json_block(generated)
+        if not payload:
+            return None
+        return _normalize_intent_payload(payload, query_text)
+    except Exception as exc:
+        logger.warning("Intent LLM parsing failed: %s", exc)
+        return None
+
+
+def _fallback_intent_parse(query_text: str) -> dict:
+    """Fallback parser when no model is available; relies on spaCy NER only."""
+    normalized = (query_text or "").replace("-", " ")
+    intent = {
+        "raw": query_text,
+        "filters": {},
+        "locations": [],
+        "services": [],
+        "clean_text": query_text or "",
+    }
+
+    if nlp is None:
+        return intent
+
+    doc = nlp(normalized)
+    for ent in doc.ents:
+        if ent.label_ == "ORG" and "buyer_name" not in intent["filters"]:
+            intent["filters"]["buyer_name"] = ent.text
+        elif ent.label_ in ("GPE", "LOC"):
+            intent["locations"].append(ent.text)
+
+    # If the model is unavailable, preserve the raw query as clean_text.
+    # The semantic and BM25 legs still work against the original query.
+    return intent
 
 
 # ---------------------------------------------------------------------------
@@ -241,52 +329,18 @@ def parse_query_intent(query_text: str) -> dict:
         locations   - GPE entities found (used for BM25 boosting)
         clean_text  - query with procurement keywords stripped (used for embeddings)
     """
-    intent = {
-        "raw": query_text,
-        "filters": {},
-        "locations": [],
-        "clean_text": query_text,
-    }
+    intent = _extract_intent_with_llm(query_text)
+    if intent is not None:
+        return intent
 
-    lower = query_text.lower()
+    intent = _fallback_intent_parse(query_text)
 
-    # Match longest keyword first to avoid partial matches
-    for kw in sorted(PROCUREMENT_METHOD_KEYWORDS, key=len, reverse=True):
-        if kw in lower:
-            intent["filters"]["procurement_method"] = PROCUREMENT_METHOD_KEYWORDS[kw]
-            intent["clean_text"] = intent["clean_text"].replace(kw, "").strip()
-            break
-
-    if nlp is not None:
-        doc = nlp(query_text)
-        for ent in doc.ents:
-            if ent.label_ == "ORG" and "buyer_name" not in intent["filters"]:
-                intent["filters"]["buyer_name"] = ent.text
-            elif ent.label_ in ("GPE", "LOC"):
-                intent["locations"].append(ent.text)
-
-    # Detect simple buyer keywords (e.g., "NHS") and normalise
-    for kw, canonical in BUYER_KEYWORDS.items():
-        if kw in lower:
-            intent["filters"]["buyer_name"] = canonical
-            intent["clean_text"] = intent["clean_text"].replace(kw, "")
-            break
-
-    # Detect services/categories mentioned in the query and remove them from clean_text
-    services = []
-    for kw, label in SERVICE_KEYWORDS.items():
-        if kw in lower:
-            services.append(label)
-            intent["clean_text"] = intent["clean_text"].replace(kw, "")
-    if services:
-        intent["services"] = services
-
-    # Detect contract-status words like 'awarded' -> map to contract_status filter
-    for kw, status in CONTRACT_STATUS_KEYWORDS.items():
-        if kw in lower:
-            intent["filters"]["contract_status"] = status
-            intent["clean_text"] = intent["clean_text"].replace(kw, "")
-            break
+    # Light cleanup for the fallback path only: keep embeddings on the original query.
+    # This avoids relying on keyword dictionaries while still extracting useful structure.
+    if not intent.get("locations"):
+        m = re.search(r"\b(?:in|near)\s+([A-Za-z\-]+(?:\s+[A-Za-z\-]+){0,2})", query_text or "")
+        if m:
+            intent["locations"].append(m.group(1).strip().title())
 
     return intent
 
@@ -391,7 +445,10 @@ def search_contracts(
     if intent["filters"].get("contract_status"):
         filters.append({"term": {"contract_status": intent["filters"]["contract_status"]}})
     if intent["filters"].get("buyer_name"):
-        filters.append({"term": {"buyer_name": intent["filters"]["buyer_name"]}})
+        filters.append({"match": {"buyer_name.text": intent["filters"]["buyer_name"]}})
+    if intent["filters"].get("is_framework"):
+        # boolean flag in index: filter for true frameworks when detected
+        filters.append({"term": {"is_framework": True}})
     if min_value is not None or max_value is not None:
         range_q = {}
         if min_value is not None:
@@ -462,24 +519,112 @@ def search_contracts(
         from_ = (page - 1) * size
         hits = hits[from_: from_ + size]
 
-    # If intent-detected filters produced zero results, retry with relaxed parsing
+    # If intent-detected filters produced zero results, attempt incremental relaxation
     if total == 0 and intent.get("filters") and use_intent_parsing:
-        logger.info("No hits with strict intent filters; retrying without intent parsing.")
-        # Mark that we're falling back so callers/UI can surface it
-        intent["fallback"] = "retrial_no_filters"
-        return search_contracts(
-            es=es,
-            query_text=query_text,
-            procurement_method=None,
-            contract_status=None,
-            min_value=min_value,
-            max_value=max_value,
-            search_type=search_type,
-            page=page,
-            size=size,
-            use_intent_parsing=False,
-            rrf_k=rrf_k,
-        )
+        logger.info("No hits with strict intent filters; attempting incremental relaxation.")
+
+        def _run_with_intent(local_intent: dict) -> tuple[list, int, list]:
+            """Run the chosen search strategy given a particular intent object.
+
+            Returns (hits, total, filters_used)
+            """
+            # build filters for this local intent
+            local_filters = []
+            if local_intent["filters"].get("procurement_method"):
+                local_filters.append({"term": {"procurement_method": local_intent["filters"]["procurement_method"]}})
+            if local_intent["filters"].get("contract_status"):
+                local_filters.append({"term": {"contract_status": local_intent["filters"]["contract_status"]}})
+            if local_intent["filters"].get("buyer_name"):
+                local_filters.append({"match": {"buyer_name.text": local_intent["filters"]["buyer_name"]}})
+            if local_intent["filters"].get("is_framework"):
+                local_filters.append({"term": {"is_framework": True}})
+            if min_value is not None or max_value is not None:
+                range_q = {}
+                if min_value is not None:
+                    range_q["gte"] = min_value
+                if max_value is not None:
+                    range_q["lte"] = max_value
+                local_filters.append({"range": {"value_amount": range_q}})
+
+            local_location_boosts = [
+                {
+                    "multi_match": {
+                        "query": loc,
+                        "fields": ["chunk_text", "description", "buyer_name.text"],
+                        "boost": 1.5,
+                    }
+                }
+                for loc in local_intent.get("locations", [])
+            ]
+
+            local_embed_text = local_intent.get("clean_text") or query_text or ""
+
+            local_service_boosts = []
+            for svc in local_intent.get("services", []) or []:
+                local_service_boosts.append({
+                    "match_phrase": {"chunk_text": {"query": svc, "boost": 2.0}}
+                })
+                local_service_boosts.append({
+                    "match_phrase": {"title": {"query": svc, "boost": 2.0}}
+                })
+
+            # If empty query text, use browse
+            if not (local_embed_text or "").strip():
+                hits_local, total_local = _browse_search(es, local_filters, page, size)
+                return hits_local, total_local, local_filters
+
+            if search_type == "text":
+                hits_local = _text_search(es, local_embed_text, local_filters, local_location_boosts, size, service_boosts=local_service_boosts)
+                total_local = len(hits_local)
+            elif search_type == "semantic":
+                qv = embedder.encode(local_embed_text, normalize_embeddings=True).tolist()
+                hits_local = _semantic_search(es, qv, local_filters, size)
+                total_local = len(hits_local)
+            else:
+                qv = embedder.encode(local_embed_text, normalize_embeddings=True).tolist()
+                fetch_size = max(size * 3, 50)
+                bm25_hits_local = _text_search(es, local_embed_text, local_filters, local_location_boosts, fetch_size, service_boosts=local_service_boosts)
+                knn_hits_local = _semantic_search(es, qv, local_filters, fetch_size)
+                fused_local = reciprocal_rank_fusion([bm25_hits_local, knn_hits_local], k=rrf_k)
+                hits_local = fused_local[:size]
+                total_local = len(fused_local)
+
+            return hits_local, total_local, local_filters
+
+        # Try relaxing filters in order of specificity
+        relax_order = ["buyer_name", "contract_status", "procurement_method", "is_framework"]
+        for key in relax_order:
+            if key in intent["filters"]:
+                # make a shallow copy and remove this key
+                new_intent = {k: v for k, v in intent.items()}
+                new_filters = dict(intent["filters"]) if intent.get("filters") else {}
+                new_filters.pop(key, None)
+                new_intent["filters"] = new_filters
+                hits_try, total_try, filters_used = _run_with_intent(new_intent)
+                if total_try > 0:
+                    intent["fallback"] = f"relaxed_{key}"
+                    hits = hits_try
+                    total = total_try
+                    aggs = _run_aggregations(es, filters_used)
+                    break
+
+        # If still no results after relaxations, fall back to disabling intent parsing entirely
+        if total == 0:
+            logger.info("Relaxations failed; retrying without intent parsing.")
+            intent["fallback"] = "retrial_no_filters"
+            return search_contracts(
+                es=es,
+                query_text=query_text,
+                procurement_method=None,
+                contract_status=None,
+                min_value=min_value,
+                max_value=max_value,
+                search_type=search_type,
+                page=page,
+                size=size,
+                use_intent_parsing=False,
+                rrf_k=rrf_k,
+            )
 
     return _format_response(hits, total, aggs, intent)
 
@@ -545,7 +690,7 @@ def _semantic_search(
         "field": "embedding",
         "query_vector": query_vector,
         "k": size,
-        "num_candidates": max(size * 10, 100),
+        "num_candidates": max(size * 50, 500),
     }
     if filters:
         knn["filter"] = {"bool": {"filter": filters}}
@@ -609,10 +754,18 @@ def _format_response(hits: list, total: int, aggs: dict, intent: dict) -> dict:
     results = []
     for rank, hit in enumerate(hits, start=1):
         source = hit.get("_source", {})
+        # Build a summary from description, chunk_text, or title; prefer longer content
+        summary = (
+            (source.get("description") or "")[:400] or
+            (source.get("chunk_text") or "")[:300] or
+            source.get("title") or
+            "No summary available"
+        )
         results.append({
             "notice_id":          source.get("notice_id"),
             "ocid":               source.get("ocid"),
             "title":              source.get("title"),
+            "summary":            summary,
             "buyer_name":         source.get("buyer_name"),
             "supplier_names":     source.get("supplier_names", []),
             "contract_status":    source.get("contract_status"),
@@ -622,7 +775,6 @@ def _format_response(hits: list, total: int, aggs: dict, intent: dict) -> dict:
             "procurement_method": source.get("procurement_method"),
             "cpv_codes":          source.get("cpv_codes", []),
             "cpv_descriptions":   source.get("cpv_descriptions", []),
-            "chunk_text":         (source.get("chunk_text") or "")[:300],
             "relevance_score":    hit.get("_rrf_score") or hit.get("_score"),
             "explanation":        _build_explanation(hit, rank, intent),
         })
@@ -644,35 +796,57 @@ def _format_response(hits: list, total: int, aggs: dict, intent: dict) -> dict:
 
 def _build_explanation(hit: dict, rank: int, intent: dict) -> dict:
     source = hit.get("_source", {})
-    filters_matched = []
-
+    
+    # --- Metadata filters matched ---
+    metadata_filters = []
     if intent.get("filters", {}).get("procurement_method"):
         v = intent["filters"]["procurement_method"]
         if source.get("procurement_method") == v:
-            filters_matched.append(f"procurement_method = {v}")
-
+            metadata_filters.append(f"Procurement method: {v}")
     if intent.get("filters", {}).get("buyer_name"):
         v = intent["filters"]["buyer_name"]
         if source.get("buyer_name") == v:
-            filters_matched.append(f"buyer_name = {v}")
+            metadata_filters.append(f"Buyer: {v}")
+    if intent.get("filters", {}).get("contract_status"):
+        v = intent["filters"]["contract_status"]
+        if source.get("contract_status") == v:
+            metadata_filters.append(f"Status: {v}")
+    if intent.get("filters", {}).get("is_framework"):
+        if source.get("is_framework"):
+            metadata_filters.append("Is framework agreement")
 
-    for loc in intent.get("locations", []):
-        if loc.lower() in (source.get("chunk_text") or "").lower():
-            filters_matched.append(f"location mention: {loc}")
-
+    # --- Keyword overlap in content ---
     query_words = set(
         w for w in (intent.get("clean_text") or intent.get("raw") or "").lower().split()
         if len(w) > 3
     )
-    keyword_overlap = [w for w in query_words if w in (source.get("chunk_text") or "").lower()]
+    content = (source.get("chunk_text") or source.get("description") or "").lower()
+    keyword_overlap = [w for w in query_words if w in content]
+
+    # --- Location mentions in content ---
+    location_mentions = []
+    for loc in intent.get("locations", []):
+        if loc.lower() in content:
+            location_mentions.append(loc)
+
+    # --- Semantic signal ---
+    semantic_signal = {
+        "method": "embedding cosine similarity via HNSW kNN",
+        "combined_with": "BM25 text relevance via hybrid RRF ranking"
+    }
 
     return {
-        "rank":                      rank,
-        "rrf_score":                 hit.get("_rrf_score"),
-        "bm25_score":                hit.get("_score"),
-        "metadata_filters_matched":  filters_matched,
-        "keyword_overlap":           keyword_overlap,
-        "semantic_signal":           "embedding cosine similarity via HNSW kNN",
+        "rank": rank,
+        "scores": {
+            "rrf_score": round(hit.get("_rrf_score"), 4) if hit.get("_rrf_score") else None,
+            "bm25_score": round(hit.get("_score"), 4) if hit.get("_score") else None,
+        },
+        "why_it_matched": {
+            "metadata_filters": metadata_filters if metadata_filters else ["No explicit filter matches"],
+            "keyword_overlap": keyword_overlap if keyword_overlap else ["No keyword overlap in content"],
+            "location_mentions": location_mentions if location_mentions else [],
+            "semantic_similarity": semantic_signal,
+        },
     }
 
 
@@ -681,3 +855,17 @@ def _extract_buckets(aggs: dict, key: str) -> list:
         {"value": b["key"], "count": b["doc_count"]}
         for b in aggs.get(key, {}).get("buckets", [])
     ]
+
+
+if __name__ == "__main__":
+    # Quick smoke checks for parse_query_intent
+    examples = [
+        "Multi-supplier frameworks for cloud services in London",
+        "NHS open tenders for IT services",
+        "awarded framework agreement for construction in Manchester",
+    ]
+    for q in examples:
+        print("Query:", q)
+        intent = parse_query_intent(q)
+        print("Parsed intent:", intent)
+        print("---")

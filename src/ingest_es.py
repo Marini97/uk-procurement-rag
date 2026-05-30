@@ -3,7 +3,7 @@ import logging
 import sys
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
-from es_client import get_es_client, setup_index, bulk_index_docs, restore_index_settings
+from es_client import INDEX_NAME, get_es_client, setup_index, bulk_index_docs, restore_index_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ def parse_release(release):
             supplier_count=0,
             contract_id="",
             contract_status="",
-            value_amount=0.0,
+            value_amount=None,
             value_currency="",
             cpv_codes=cpv_codes,
             cpv_descriptions=cpv_descriptions,
@@ -360,13 +360,9 @@ def main(filepath="data/ocds.jsonl"):
     logger.info("Ingestion complete!")
     # Make newly indexed documents visible and restore index settings
     try:
-        es.indices.refresh(index=es.indices.get_alias('*').keys())
-    except Exception:
-        # Fallback: refresh the target index only
-        try:
-            es.indices.refresh(index='fts_contracts')
-        except Exception:
-            pass
+        es.indices.refresh(INDEX_NAME)
+    except Exception as e:
+        logger.warning(f"Failed to refresh index automatically: {e}. You can run es.indices.refresh(index=INDEX_NAME) manually.")
     try:
         restore_index_settings(es)
     except Exception:

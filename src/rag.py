@@ -2,9 +2,66 @@ import os
 import logging
 from typing import List, Optional
 
-from src.es_client import get_es_client, search_contracts
+from src.es_client import get_es_client, search_contracts, INDEX_NAME
 
 logger = logging.getLogger(__name__)
+
+
+def _flatten_mapping_fields(properties: dict, prefix: str = "") -> List[tuple[str, str]]:
+    """Flatten Elasticsearch mapping properties into (field_path, field_type)."""
+    fields: List[tuple[str, str]] = []
+    for name, meta in (properties or {}).items():
+        path = f"{prefix}.{name}" if prefix else name
+        field_type = meta.get("type", "object")
+        fields.append((path, field_type))
+
+        # Include multi-fields (e.g. buyer_name.text)
+        for sub_name, sub_meta in (meta.get("fields") or {}).items():
+            sub_path = f"{path}.{sub_name}"
+            sub_type = sub_meta.get("type", "unknown")
+            fields.append((sub_path, sub_type))
+
+        # Recurse nested/object properties
+        if "properties" in meta:
+            fields.extend(_flatten_mapping_fields(meta.get("properties") or {}, path))
+
+    return fields
+
+
+def _mapping_to_filter_hints(field_type: str) -> str:
+    """Suggest filter strategy by ES field type for prompt guidance."""
+    keyword_like = {"keyword", "boolean", "integer", "long", "short", "byte", "date"}
+    range_like = {"double", "float", "half_float", "scaled_float", "integer", "long", "date"}
+
+    if field_type in keyword_like and field_type in range_like:
+        return "term/range"
+    if field_type in keyword_like:
+        return "term"
+    if field_type in range_like:
+        return "range"
+    if field_type in {"text"}:
+        return "match"
+    if field_type in {"nested", "object"}:
+        return "nested/object"
+    return "query-dependent"
+
+
+def _build_index_schema_context(es, index_name: str) -> str:
+    """Fetch index mapping and render all indexed fields with filter hints."""
+    try:
+        mapping = es.indices.get_mapping(index=index_name)
+        properties = (mapping.get(index_name, {}).get("mappings", {}).get("properties", {}))
+        fields = _flatten_mapping_fields(properties)
+        if not fields:
+            return "Index fields unavailable."
+
+        lines = ["Available index fields (field_path: type -> suggested_filter):"]
+        for field_path, field_type in sorted(fields, key=lambda x: x[0]):
+            lines.append(f"- {field_path}: {field_type} -> {_mapping_to_filter_hints(field_type)}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning("Could not load index mapping for prompt context: %s", e)
+        return "Index fields unavailable (mapping lookup failed)."
 
 
 def _build_context(results: List[dict]) -> str:
@@ -41,9 +98,13 @@ def rag_answer(
         return {"answer": "No matching contracts found.", "sources": []}
 
     context = _build_context(results)
+    schema_context = _build_index_schema_context(es, INDEX_NAME)
 
     prompt = (
-        "You are an expert assistant for UK procurement data. Use the contextual documents below to answer the question.\n\n"
+        "You are an expert assistant for UK procurement data. Use both contextual documents and index schema metadata to answer the question.\n\n"
+        "When suggesting or applying filters, ONLY use fields listed in the index schema section and choose filter style based on suggested_filter.\n\n"
+        "Index schema:\n===\n"
+        f"{schema_context}\n===\n\n"
         "Context documents:\n===\n"
         f"{context}\n===\n"
         f"Question: {query}\n\nAnswer concisely, cite documents by number when relevant."

@@ -6,11 +6,64 @@ from src.es_client import get_es_client, search_contracts, INDEX_NAME
 from src.rag import rag_answer
 import os
 import math
+from typing import List, Tuple
 
 app = FastAPI(title="FTS Contract Search", description="Local search interface for UK public procurement data")
 
 templates = Jinja2Templates(directory="templates")
 es = get_es_client()
+
+
+def _flatten_mapping_fields(properties: dict, prefix: str = "") -> List[Tuple[str, str]]:
+    fields: List[Tuple[str, str]] = []
+    for name, meta in (properties or {}).items():
+        path = f"{prefix}.{name}" if prefix else name
+        field_type = meta.get("type", "object")
+        fields.append((path, field_type))
+
+        for sub_name, sub_meta in (meta.get("fields") or {}).items():
+            sub_path = f"{path}.{sub_name}"
+            fields.append((sub_path, sub_meta.get("type", "unknown")))
+
+        if "properties" in meta:
+            fields.extend(_flatten_mapping_fields(meta.get("properties") or {}, path))
+
+    return fields
+
+
+def _suggest_filter_type(field_type: str) -> str:
+    keyword_like = {"keyword", "boolean", "integer", "long", "short", "byte", "date"}
+    range_like = {"double", "float", "half_float", "scaled_float", "integer", "long", "date"}
+
+    if field_type in keyword_like and field_type in range_like:
+        return "term/range"
+    if field_type in keyword_like:
+        return "term"
+    if field_type in range_like:
+        return "range"
+    if field_type == "text":
+        return "match"
+    if field_type in {"nested", "object"}:
+        return "nested/object"
+    return "query-dependent"
+
+
+def _get_index_filter_catalog(es_client, index_name: str) -> List[dict]:
+    try:
+        mapping = es_client.indices.get_mapping(index=index_name)
+        properties = mapping.get(index_name, {}).get("mappings", {}).get("properties", {})
+        fields = _flatten_mapping_fields(properties)
+        return [
+            {
+                "field": field_path,
+                "type": field_type,
+                "filter": _suggest_filter_type(field_type),
+            }
+            for field_path, field_type in sorted(fields, key=lambda x: x[0])
+        ]
+    except Exception as e:
+        print(f"Error loading index mapping: {e}")
+        return []
 
 @app.get("/", response_class=HTMLResponse)
 async def index(
@@ -42,6 +95,7 @@ async def index(
     # Primary path: new normalized response shape from es_client.search_contracts
     hits = response.get("results", [])
     total_value = response.get("total", 0)
+    parsed_intent = response.get("parsed_intent", {})
 
     # If user requested a RAG answer (and provided a query), run the RAG helper
     rag_response = None
@@ -88,6 +142,8 @@ async def index(
             for bucket in aggs.get("contract_statuses", {}).get("buckets", [])
         ]
 
+    index_filter_catalog = _get_index_filter_catalog(es, INDEX_NAME)
+
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -105,6 +161,9 @@ async def index(
             "statuses_agg": statuses_agg
                 ,
                 "rag_response": rag_response
+                ,
+                "parsed_intent": parsed_intent,
+                "index_filter_catalog": index_filter_catalog,
         }
     )
 
