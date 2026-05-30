@@ -1,5 +1,6 @@
 elasticsearch>=9.4.1
-sentence-transformers>=2.2.2
+sentence-transformers>=5.5.1
+spacy>=3.8.14
 tqdm>=4.66.1
 pydantic>=2.4.0
 fastapi

@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from src.es_client import get_es_client, search_contracts, INDEX_NAME
+from src.rag import rag_answer
+import os
 import math
 
 app = FastAPI(title="FTS Contract Search", description="Local search interface for UK public procurement data")
@@ -17,6 +19,7 @@ async def index(
     method: str = Query(None, description="Procurement method filter"),
     status: str = Query(None, description="Contract status filter"),
     search_type: str = Query("hybrid", description="Type of search: text, semantic, or hybrid"),
+    rag: str = Query(None, description="Set to 1 to request a RAG answer for the query"),
     page: int = Query(1, ge=1, description="Page number")
 ):
     size = 10
@@ -33,33 +36,57 @@ async def index(
             size=size
         )
     except Exception as e:
-        response = {"hits": {"total": {"value": 0}, "hits": []}, "aggregations": {}}
+        response = {"total": 0, "results": [], "facets": {}}
         print(f"Error during search: {e}")
 
-    # Extract hits
-    hits = response.get("hits", {}).get("hits", [])
-    
-    # Extract total based on ES version mapping (total can be an int or a dict)
-    total_obj = response.get("hits", {}).get("total", {})
-    if isinstance(total_obj, dict):
-        total_value = total_obj.get("value", 0)
-    else:
-        total_value = total_obj
+    # Primary path: new normalized response shape from es_client.search_contracts
+    hits = response.get("results", [])
+    total_value = response.get("total", 0)
+
+    # If user requested a RAG answer (and provided a query), run the RAG helper
+    rag_response = None
+    try:
+        if rag and q:
+            # pass model via env var RAG_MODEL if set, otherwise fallback to summary
+            rag_response = rag_answer(query=q, es=es, top_k=5, model_name=os.environ.get("RAG_MODEL"))
+    except Exception as e:
+        print(f"RAG generation failed: {e}")
+
+    # Backward-compat path: older raw Elasticsearch response shape
+    if not hits and "hits" in response:
+        hits = response.get("hits", {}).get("hits", [])
+        total_obj = response.get("hits", {}).get("total", {})
+        if isinstance(total_obj, dict):
+            total_value = total_obj.get("value", 0)
+        else:
+            total_value = total_obj
         
     # Calculate pages
     total_pages = math.ceil(total_value / size) if total_value > 0 else 0
     total_pages = min(total_pages, 100) # limit to max 100 pages for safety
 
     # Extract aggregations for filters
-    aggs = response.get("aggregations", {})
+    facets = response.get("facets", {})
     methods_agg = [
-        {"key": bucket["key"], "count": bucket["doc_count"]}
-        for bucket in aggs.get("procurement_methods", {}).get("buckets", [])
+        {"key": item["value"], "count": item["count"]}
+        for item in facets.get("procurement_methods", [])
     ]
     statuses_agg = [
-        {"key": bucket["key"], "count": bucket["doc_count"]}
-        for bucket in aggs.get("contract_statuses", {}).get("buckets", [])
+        {"key": item["value"], "count": item["count"]}
+        for item in facets.get("contract_statuses", [])
     ]
+
+    # Backward-compat path for legacy aggregation structure
+    if not methods_agg and not statuses_agg and "aggregations" in response:
+        aggs = response.get("aggregations", {})
+        methods_agg = [
+            {"key": bucket["key"], "count": bucket["doc_count"]}
+            for bucket in aggs.get("procurement_methods", {}).get("buckets", [])
+        ]
+        statuses_agg = [
+            {"key": bucket["key"], "count": bucket["doc_count"]}
+            for bucket in aggs.get("contract_statuses", {}).get("buckets", [])
+        ]
 
     return templates.TemplateResponse(
         request=request,
@@ -76,6 +103,8 @@ async def index(
             "results": hits,
             "methods_agg": methods_agg,
             "statuses_agg": statuses_agg
+                ,
+                "rag_response": rag_response
         }
     )
 
