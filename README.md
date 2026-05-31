@@ -38,3 +38,10 @@ This handles deduplication and maps nested supplier, buyer, and category data to
 We provide two notebooks to help understand the data:
 - `notebooks/raw_eda.ipynb`: A raw JSON parsing and basic exploratory data analysis (EDA) using pure pandas/matplotlib without connecting to the database.
 - `notebooks/explore.ipynb`: Connects to Elasticsearch to run aggregations (top buyers, procurement methods) and tests the base Semantic Search queries used for RAG operations.
+
+### 3. Retrieval Evaluation
+Use the evaluation CLI to score ranked retrieval results against a manual judgment file:
+```bash
+python -m src.eval --queries data/eval_queries.example.json --k 5
+```
+The evaluator compares `text`, `semantic`, and `hybrid` retrieval modes using Precision@k, Recall@k, MRR, and nDCG@k.

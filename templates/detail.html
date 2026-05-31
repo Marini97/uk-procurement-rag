@@ -103,13 +103,16 @@
                         Classifications (CPV)
                     </h2>
                     <div class="grid grid-cols-1 gap-3">
-                        {% if contract.cpv_codes %}
-                            {% set codes = contract.cpv_codes|default([]) %}
+                        {% set codes = contract.cpv_codes|default([]) %}
+                        {% if not codes and contract.classification_codes %}
+                            {% set codes = contract.classification_codes|default([]) %}
+                        {% endif %}
+                        {% if codes %}
                             {% set descs = contract.cpv_descriptions|default([]) %}
-                            {% for i in range([codes|length, descs|length]|min) %}
+                            {% for i in range(codes|length) %}
                                 <div class="flex items-center bg-gray-50 p-3 rounded-lg border border-gray-100 hover:border-blue-200 transition">
                                     <span class="bg-blue-100 text-blue-800 text-xs font-bold font-mono px-3 py-1.5 rounded-md mr-4 shadow-sm w-24 text-center">{{ codes[i] }}</span>
-                                    <span class="text-gray-700 font-medium">{{ descs[i] }}</span>
+                                    <span class="text-gray-700 font-medium">{{ descs[i] if i < descs|length else '' }}</span>
                                 </div>
                             {% endfor %}
                         {% else %}

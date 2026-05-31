@@ -12,6 +12,44 @@ logger = logging.getLogger(__name__)
 MODEL_NAME = "all-MiniLM-L6-v2"
 BATCH_SIZE = 2000
 
+
+def _dict_list(value):
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _append_cpv(codes, descriptions, classification):
+    if not isinstance(classification, dict):
+        return
+
+    scheme = classification.get("scheme")
+    if scheme and str(scheme).upper() != "CPV":
+        return
+
+    code = classification.get("id")
+    description = classification.get("description")
+
+    if code and code not in codes:
+        codes.append(code)
+    if description and description not in descriptions:
+        descriptions.append(description)
+
+
+def _collect_cpv(*, items=None, classifications=None):
+    codes = []
+    descriptions = []
+
+    for classification in _dict_list(classifications):
+        _append_cpv(codes, descriptions, classification)
+
+    for item in _dict_list(items):
+        _append_cpv(codes, descriptions, item.get("classification"))
+        for classification in _dict_list(item.get("additionalClassifications")):
+            _append_cpv(codes, descriptions, classification)
+
+    return codes, descriptions
+
 def parse_release(release):
     """
     Parses a single OCDS release and normalizes it to a list of contract-level documents.
@@ -30,16 +68,14 @@ def parse_release(release):
     proc_method = tender.get("procurementMethod") or "Unknown"
     
     # Categories / CPV
-    items = tender.get("items", [])
-    cpv_codes = []
-    cpv_descriptions = []
-    for item in items:
-        clazz = item.get("classification", {})
-        if clazz.get("id"): cpv_codes.append(clazz["id"])
-        if clazz.get("description"): cpv_descriptions.append(clazz["description"])
+    items = _dict_list(tender.get("items"))
+    cpv_codes, cpv_descriptions = _collect_cpv(
+        items=items,
+        classifications=[tender.get("classification")],
+    )
         
     # Parties (Buyers / Suppliers)
-    parties = release.get("parties") or []
+    parties = _dict_list(release.get("parties"))
     party_map = {p.get("id"): p for p in parties if p.get("id")}
     buyers = [p for p in parties if "buyer" in (p.get("roles") or [])]
     buyer_party = buyers[0] if buyers else {}
@@ -54,20 +90,28 @@ def parse_release(release):
         buyer_address = ", ".join(str(address.get(k)) for k in ("streetAddress", "locality", "region", "countryName") if address.get(k))
     else:
         buyer_address = ""
+    buyer_region = address.get("region") if address else None
+    buyer_country = address.get("countryName") if address else None
     
     # Awards & Suppliers mapped by award ID
-    awards = release.get("awards") or []
+    awards = _dict_list(release.get("awards"))
     award_map = {}
     for award in awards:
-        suppliers = award.get("suppliers") or []
+        suppliers = _dict_list(award.get("suppliers"))
         supplier_names = [s.get("name") for s in suppliers if s.get("name")]
         supplier_ids = [s.get("id") for s in suppliers if s.get("id")]
+        award_cpv_codes, award_cpv_descriptions = _collect_cpv(
+            items=award.get("items"),
+            classifications=[award.get("classification")],
+        )
         award_map[award.get("id")] = {
             "supplier_names": supplier_names,
             "supplier_ids": supplier_ids,
             "award_date": award.get("date"),
             "award_value": (award.get("value") or {}).get("amount"),
             "award_value_currency": (award.get("value") or {}).get("currency"),
+            "award_cpv_codes": award_cpv_codes,
+            "award_cpv_descriptions": award_cpv_descriptions,
         }
 
     contracts = release.get("contracts") or []
@@ -76,6 +120,7 @@ def parse_release(release):
     
     if not contracts:
         # If no contracts yet (e.g. tender phase), generate a doc for the tender
+        documents = _dict_list(release.get("documents"))
         docs.append(create_doc(
             ocid=ocid,
             notice_id=notice_id,
@@ -88,6 +133,8 @@ def parse_release(release):
             buyer_id=buyer_id,
             buyer_contact=buyer_contact,
             buyer_address=buyer_address,
+            buyer_region=buyer_region,
+            buyer_country=buyer_country,
             supplier_names=[],
             supplier_ids=[],
             supplier_countries=[],
@@ -108,19 +155,25 @@ def parse_release(release):
             classification_codes=cpv_codes,
             procurement_category=tender.get("mainProcurementCategory"),
             is_framework=("framework" in (proc_method or "").lower() or "framework" in (tender.get("procurementMethodDetails") or "").lower()),
-            url=(release.get("documents") or [])[0].get("url") if release.get("documents") else None,
-            documents_text="; ".join([d.get("title","") for d in (release.get("documents") or [])]),
+            url=next((doc.get("url") for doc in documents if doc.get("url")), None),
+            documents_text="; ".join([doc.get("title", "") for doc in documents if doc.get("title")]),
             notes=", ".join(release.get("tag") or []) if release.get("tag") else "",
         ))
     else:
         # Generate a doc per contract
+        contracts = _dict_list(release.get("contracts"))
         for contract in contracts:
             contract_id = contract.get("id") or ""
             contract_status = contract.get("status") or "Unknown"
             
             val = contract.get("value") or {}
-            value_amount = val.get("amount") or 0.0
+            value_amount = val.get("amount")
             value_currency = val.get("currency") or ""
+
+            contract_cpv_codes, contract_cpv_descriptions = _collect_cpv(
+                items=contract.get("items"),
+                classifications=[contract.get("classification")],
+            )
             
             # Link to award suppliers
             award_id = contract.get("awardID", "")
@@ -130,6 +183,15 @@ def parse_release(release):
             award_date = award_info.get("award_date")
             award_value_amount = award_info.get("award_value")
             award_value_currency = award_info.get("award_value_currency")
+
+            if not contract_cpv_codes:
+                contract_cpv_codes = award_info.get("award_cpv_codes") or []
+            if not contract_cpv_descriptions:
+                contract_cpv_descriptions = award_info.get("award_cpv_descriptions") or []
+            if not contract_cpv_codes:
+                contract_cpv_codes = cpv_codes
+            if not contract_cpv_descriptions:
+                contract_cpv_descriptions = cpv_descriptions
 
             # Supplier countries from party_map where available
             supplier_countries = []
@@ -154,12 +216,15 @@ def parse_release(release):
                 buyer_id=buyer_id,
                 buyer_contact=buyer_contact,
                 buyer_address=buyer_address,
+                buyer_region=buyer_region,
+                buyer_country=buyer_country,
                 supplier_names=supplier_names,
                 supplier_ids=supplier_ids,
                 supplier_countries=supplier_countries,
                 supplier_count=supplier_count,
                 contract_id=contract_id,
                 contract_status=contract_status,
+                award_id=award_id,
                 value_amount=value_amount,
                 value_currency=value_currency,
                 cpv_codes=cpv_codes,
@@ -171,11 +236,11 @@ def parse_release(release):
                 tender_period_end=(tender.get("tenderPeriod") or {}).get("endDate"),
                 lots=tender.get("lots") or [],
                 items_text=", ".join([it.get("description") or "" for it in items]) if items else "",
-                classification_codes=cpv_codes,
+                classification_codes=contract_cpv_codes,
                 procurement_category=tender.get("mainProcurementCategory"),
                 is_framework=("framework" in (proc_method or "").lower() or "framework" in (tender.get("procurementMethodDetails") or "").lower()),
-                url=(release.get("documents") or [])[0].get("url") if release.get("documents") else None,
-                documents_text="; ".join([d.get("title","") for d in (release.get("documents") or [])]),
+                url=next((doc.get("url") for doc in _dict_list(release.get("documents")) if doc.get("url")), None),
+                documents_text="; ".join([doc.get("title", "") for doc in _dict_list(release.get("documents")) if doc.get("title")]),
                 notes=", ".join(release.get("tag") or []) if release.get("tag") else "",
             ))
 
@@ -193,12 +258,15 @@ def create_doc(
     buyer_id=None,
     buyer_contact=None,
     buyer_address=None,
+    buyer_region=None,
+    buyer_country=None,
     supplier_names=None,
     supplier_ids=None,
     supplier_countries=None,
     supplier_count=0,
     contract_id=None,
     contract_status=None,
+    award_id=None,
     value_amount=None,
     value_currency=None,
     cpv_codes=None,
@@ -223,7 +291,7 @@ def create_doc(
     supplier_countries = supplier_countries or []
     cpv_descriptions = cpv_descriptions or []
     cpv_codes = cpv_codes or []
-    lots = lots or []
+    lots = _dict_list(lots)
 
     supplier_text = ", ".join(supplier_names) if supplier_names else "Unknown Supplier"
     cpv_text = ", ".join(cpv_descriptions) if cpv_descriptions else "No classification"
@@ -282,6 +350,8 @@ def create_doc(
         "buyer_id": buyer_id,
         "buyer_contact": buyer_contact,
         "buyer_address": buyer_address,
+        "buyer_region": buyer_region,
+        "buyer_country": buyer_country,
         "supplier_names": supplier_names,
         "supplier_ids": supplier_ids,
         "supplier_names_text": ", ".join(supplier_names) if supplier_names else None,
@@ -289,6 +359,7 @@ def create_doc(
         "supplier_count": supplier_count,
         "contract_id": contract_id,
         "contract_status": contract_status,
+        "award_id": award_id,
         "value_amount": value_amount,
         "value_currency": value_currency,
         "award_date": award_date,
@@ -360,7 +431,7 @@ def main(filepath="data/ocds.jsonl"):
     logger.info("Ingestion complete!")
     # Make newly indexed documents visible and restore index settings
     try:
-        es.indices.refresh(INDEX_NAME)
+        es.indices.refresh(index=INDEX_NAME)
     except Exception as e:
         logger.warning(f"Failed to refresh index automatically: {e}. You can run es.indices.refresh(index=INDEX_NAME) manually.")
     try:

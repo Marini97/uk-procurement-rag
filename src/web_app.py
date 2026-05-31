@@ -72,7 +72,7 @@ async def index(
     method: str = Query(None, description="Procurement method filter"),
     status: str = Query(None, description="Contract status filter"),
     search_type: str = Query("hybrid", description="Type of search: text, semantic, or hybrid"),
-    rag: str = Query(None, description="Set to 1 to request a RAG answer for the query"),
+    sort: str = Query("relevance", description="Sort order"),
     page: int = Query(1, ge=1, description="Page number")
 ):
     size = 10
@@ -85,6 +85,7 @@ async def index(
             procurement_method=method,
             contract_status=status,
             search_type=search_type,
+            sort=sort,
             page=page,
             size=size
         )
@@ -100,8 +101,8 @@ async def index(
     # If user requested a RAG answer (and provided a query), run the RAG helper
     rag_response = None
     try:
-        if rag and q:
-            # pass model via env var RAG_MODEL if set, otherwise fallback to summary
+        # RAG answers are generated for every non-empty query by default
+        if q:
             rag_response = rag_answer(query=q, es=es, top_k=5, model_name=os.environ.get("RAG_MODEL"))
     except Exception as e:
         print(f"RAG generation failed: {e}")
@@ -150,6 +151,7 @@ async def index(
         context={
             "request": request,
             "q": q,
+            "sort": sort,
             "method": method,
             "status": status,
             "search_type": search_type,

@@ -403,6 +403,7 @@ def search_contracts(
     min_value: Optional[float] = None,
     max_value: Optional[float] = None,
     search_type: str = "hybrid",
+    sort: str = "relevance",
     page: int = 1,
     size: int = 20,
     use_intent_parsing: bool = True,
@@ -462,7 +463,7 @@ def search_contracts(
         {
             "multi_match": {
                 "query": loc,
-                "fields": ["chunk_text", "description", "buyer_name.text"],
+                "fields": ["chunk_text", "description", "buyer_name.text", "cpv_descriptions", "cpv_codes"],
                 "boost": 1.5,
             }
         }
@@ -484,18 +485,21 @@ def search_contracts(
     # Empty query should behave like a browsable listing with real totals.
     # This avoids hybrid candidate caps (e.g. 50) from truncating the homepage.
     if not embed_text.strip():
-        hits, total = _browse_search(es, filters, page, size)
+        hits, total = _browse_search(es, filters, page, size, sort=sort)
         aggs = _run_aggregations(es, filters)
         return _format_response(hits, total, aggs, intent)
 
     # --- Dispatch to search strategy ---
     if search_type == "text":
-        hits = _text_search(es, embed_text, filters, location_boosts, size, service_boosts=service_boosts)
+        hits = _text_search(es, embed_text, filters, location_boosts, size, service_boosts=service_boosts, sort=sort)
         total = len(hits)
 
     elif search_type == "semantic":
         query_vector = embedder.encode(embed_text, normalize_embeddings=True).tolist()
         hits = _semantic_search(es, query_vector, filters, size)
+        # apply client-side sort for semantic results if requested
+        if sort and sort != "relevance":
+            hits = _sort_hits(hits, sort)
         total = len(hits)
 
     else:  # hybrid — two queries + client-side RRF
@@ -504,10 +508,14 @@ def search_contracts(
         # Fetch more candidates per leg so RRF has enough to work with
         fetch_size = max(size * 3, 50)
 
-        bm25_hits = _text_search(es, embed_text, filters, location_boosts, fetch_size, service_boosts=service_boosts)
+        bm25_hits = _text_search(es, embed_text, filters, location_boosts, fetch_size, service_boosts=service_boosts, sort=sort)
         knn_hits  = _semantic_search(es, query_vector, filters, fetch_size)
 
         fused = reciprocal_rank_fusion([bm25_hits, knn_hits], k=rrf_k)
+        # apply post-fusion sort if requested (non-relevance)
+        if sort and sort != "relevance":
+            fused = _sort_hits(fused, sort)
+
         hits  = fused[:size]
         total = len(fused)
 
@@ -570,22 +578,26 @@ def search_contracts(
 
             # If empty query text, use browse
             if not (local_embed_text or "").strip():
-                hits_local, total_local = _browse_search(es, local_filters, page, size)
+                hits_local, total_local = _browse_search(es, local_filters, page, size, sort=sort)
                 return hits_local, total_local, local_filters
 
             if search_type == "text":
-                hits_local = _text_search(es, local_embed_text, local_filters, local_location_boosts, size, service_boosts=local_service_boosts)
+                hits_local = _text_search(es, local_embed_text, local_filters, local_location_boosts, size, service_boosts=local_service_boosts, sort=sort)
                 total_local = len(hits_local)
             elif search_type == "semantic":
                 qv = embedder.encode(local_embed_text, normalize_embeddings=True).tolist()
                 hits_local = _semantic_search(es, qv, local_filters, size)
+                if sort and sort != "relevance":
+                    hits_local = _sort_hits(hits_local, sort)
                 total_local = len(hits_local)
             else:
                 qv = embedder.encode(local_embed_text, normalize_embeddings=True).tolist()
                 fetch_size = max(size * 3, 50)
-                bm25_hits_local = _text_search(es, local_embed_text, local_filters, local_location_boosts, fetch_size, service_boosts=local_service_boosts)
+                bm25_hits_local = _text_search(es, local_embed_text, local_filters, local_location_boosts, fetch_size, service_boosts=local_service_boosts, sort=sort)
                 knn_hits_local = _semantic_search(es, qv, local_filters, fetch_size)
                 fused_local = reciprocal_rank_fusion([bm25_hits_local, knn_hits_local], k=rrf_k)
+                if sort and sort != "relevance":
+                    fused_local = _sort_hits(fused_local, sort)
                 hits_local = fused_local[:size]
                 total_local = len(fused_local)
 
@@ -620,6 +632,7 @@ def search_contracts(
                 min_value=min_value,
                 max_value=max_value,
                 search_type=search_type,
+                sort=sort,
                 page=page,
                 size=size,
                 use_intent_parsing=False,
@@ -640,6 +653,7 @@ def _text_search(
     location_boosts: list,
     size: int,
     service_boosts: list | None = None,
+    sort: str = "relevance",
 ) -> list[dict]:
     should_clauses = []
     if location_boosts:
@@ -658,6 +672,8 @@ def _text_search(
                             "title^4",
                             "buyer_name.text^3",
                             "cpv_descriptions^2",
+                            "cpv_codes^2",
+                            "classification_codes^2",
                             "description^2",
                             "chunk_text",
                         ],
@@ -671,8 +687,59 @@ def _text_search(
             }
         },
     }
+    # apply server-side sort when requested (non-relevance)
+    if sort and sort != "relevance":
+        sort_clause = None
+        if sort == "date_desc":
+            sort_clause = [{"release_date": {"order": "desc", "missing": "_last"}}]
+        elif sort == "date_asc":
+            sort_clause = [{"release_date": {"order": "asc", "missing": "_last"}}]
+        elif sort == "value_desc":
+            sort_clause = [{"value_amount": {"order": "desc", "missing": "_last"}}]
+        elif sort == "value_asc":
+            sort_clause = [{"value_amount": {"order": "asc", "missing": "_last"}}]
+        elif sort == "buyer_asc":
+            sort_clause = [{"buyer_name": {"order": "asc", "missing": "_last"}}]
+        elif sort == "buyer_desc":
+            sort_clause = [{"buyer_name": {"order": "desc", "missing": "_last"}}]
+
+        if sort_clause is not None:
+            body["sort"] = sort_clause
+
     resp = es.search(index=INDEX_NAME, body=body)
     return resp["hits"]["hits"]
+
+
+def _sort_hits(hits: list[dict], sort: str) -> list[dict]:
+    """Sort a list of ES hits (in-memory) according to the requested sort key."""
+    if not hits:
+        return hits
+
+    reverse = False
+    key = None
+
+    if sort == "date_desc":
+        reverse = True
+        key = lambda h: (h.get("_source", {}).get("release_date") or "")
+    elif sort == "date_asc":
+        key = lambda h: (h.get("_source", {}).get("release_date") or "")
+    elif sort == "value_desc":
+        reverse = True
+        key = lambda h: (h.get("_source", {}).get("value_amount") or 0)
+    elif sort == "value_asc":
+        key = lambda h: (h.get("_source", {}).get("value_amount") or 0)
+    elif sort == "buyer_asc":
+        key = lambda h: (h.get("_source", {}).get("buyer_name") or "")
+    elif sort == "buyer_desc":
+        reverse = True
+        key = lambda h: (h.get("_source", {}).get("buyer_name") or "")
+    else:
+        return hits
+
+    try:
+        return sorted(hits, key=key, reverse=reverse)
+    except Exception:
+        return hits
 
 
 def _semantic_search(
@@ -705,6 +772,7 @@ def _browse_search(
     filters: list,
     page: int,
     size: int,
+    sort: str = "relevance",
 ) -> tuple[list[dict], int]:
     """
     Returns a plain filtered listing for empty-query browsing with accurate totals.
@@ -715,11 +783,26 @@ def _browse_search(
         "size": size,
         "track_total_hits": True,
         "query": {"bool": {"filter": filters}} if filters else {"match_all": {}},
-        "sort": [
+    }
+
+    if sort and sort != "relevance":
+        if sort == "date_desc":
+            body["sort"] = [{"release_date": {"order": "desc", "missing": "_last"}}]
+        elif sort == "date_asc":
+            body["sort"] = [{"release_date": {"order": "asc", "missing": "_last"}}]
+        elif sort == "value_desc":
+            body["sort"] = [{"value_amount": {"order": "desc", "missing": "_last"}}]
+        elif sort == "value_asc":
+            body["sort"] = [{"value_amount": {"order": "asc", "missing": "_last"}}]
+        elif sort == "buyer_asc":
+            body["sort"] = [{"buyer_name": {"order": "asc", "missing": "_last"}}]
+        elif sort == "buyer_desc":
+            body["sort"] = [{"buyer_name": {"order": "desc", "missing": "_last"}}]
+    else:
+        body["sort"] = [
             {"release_date": {"order": "desc", "missing": "_last"}},
             {"ocid": {"order": "asc"}},
-        ],
-    }
+        ]
     resp = es.search(index=INDEX_NAME, body=body)
     hits = resp.get("hits", {}).get("hits", [])
     total_obj = resp.get("hits", {}).get("total", 0)
@@ -740,6 +823,7 @@ def _run_aggregations(es: Elasticsearch, filters: list) -> dict:
             "contract_statuses":   {"terms": {"field": "contract_status",   "size": 10}},
             "top_buyers":          {"terms": {"field": "buyer_name",        "size": 10}},
             "value_stats":         {"stats": {"field": "value_amount"}},
+            "cpv_codes":           {"terms": {"field": "cpv_codes", "size": 20}},
         },
     }
     resp = es.search(index=INDEX_NAME, body=body)
@@ -775,6 +859,7 @@ def _format_response(hits: list, total: int, aggs: dict, intent: dict) -> dict:
             "procurement_method": source.get("procurement_method"),
             "cpv_codes":          source.get("cpv_codes", []),
             "cpv_descriptions":   source.get("cpv_descriptions", []),
+            "classification_codes": source.get("classification_codes", []),
             "relevance_score":    hit.get("_rrf_score") or hit.get("_score"),
             "explanation":        _build_explanation(hit, rank, intent),
         })

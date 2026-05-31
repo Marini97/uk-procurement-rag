@@ -34,40 +34,6 @@
                     </select>
                 </div>
 
-                <!-- Procurement Method -->
-                {% if methods_agg %}
-                <div class="mb-6">
-                    <label class="block text-sm font-semibold mb-2">Procurement Method</label>
-                    <div class="space-y-1 text-sm">
-                        {% for meth in methods_agg %}
-                            <div>
-                                <label class="flex items-center space-x-2">
-                                    <input type="radio" name="method" value="{{ meth.key }}" {% if method == meth.key %}checked{% endif %} onchange="this.form.submit()">
-                                    <span>{{ meth.key|capitalize }} ({{ meth.count }})</span>
-                                </label>
-                            </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
-
-                <!-- Contract Status -->
-                {% if statuses_agg %}
-                <div class="mb-6">
-                    <label class="block text-sm font-semibold mb-2">Contract Status</label>
-                    <div class="space-y-1 text-sm">
-                        {% for stat in statuses_agg %}
-                            <div>
-                                <label class="flex items-center space-x-2">
-                                    <input type="radio" name="status" value="{{ stat.key }}" {% if status == stat.key %}checked{% endif %} onchange="this.form.submit()">
-                                    <span>{{ stat.key|title }} ({{ stat.count }})</span>
-                                </label>
-                            </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
-
                 <div class="mt-4 flex gap-2">
                     <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded hover:bg-blue-700">Search</button>
                     {% if q or method or status %}
@@ -76,10 +42,21 @@
                 </div>
                 <!-- RAG option -->
                 <div class="mt-3 text-sm text-gray-600">
-                    <label class="inline-flex items-center space-x-2">
-                        <input type="checkbox" name="rag" value="1" {% if rag %}checked{% endif %} class="form-checkbox">
-                        <span>Get a concise RAG answer for this query</span>
-                    </label>
+                    <p class="italic text-xs">RAG answers are provided automatically for each non-empty query.</p>
+                </div>
+
+                <!-- Sort selector -->
+                <div class="mb-6 mt-4">
+                    <label class="block text-sm font-semibold mb-2">Sort Results By</label>
+                    <select name="sort" class="w-full border p-2 rounded">
+                        <option value="relevance" {% if sort == 'relevance' %}selected{% endif %}>Relevance (default)</option>
+                        <option value="date_desc" {% if sort == 'date_desc' %}selected{% endif %}>Date (newest)</option>
+                        <option value="date_asc" {% if sort == 'date_asc' %}selected{% endif %}>Date (oldest)</option>
+                        <option value="value_desc" {% if sort == 'value_desc' %}selected{% endif %}>Value (high → low)</option>
+                        <option value="value_asc" {% if sort == 'value_asc' %}selected{% endif %}>Value (low → high)</option>
+                        <option value="buyer_asc" {% if sort == 'buyer_asc' %}selected{% endif %}>Buyer (A → Z)</option>
+                        <option value="buyer_desc" {% if sort == 'buyer_desc' %}selected{% endif %}>Buyer (Z → A)</option>
+                    </select>
                 </div>
 
                 {% if index_filter_catalog %}
@@ -188,21 +165,9 @@
                     </div>
                     
                     <!-- Explanation Section: Why it matched -->
-                    {% if hit.explanation %}
+                    {% if hit.explanation and q %}
                         <div class="bg-blue-50 border-l-4 border-blue-400 p-4 rounded-r-lg shadow-sm text-sm mt-2 ml-0">
                             <div class="font-semibold text-blue-900 mb-3">Why it matched (Rank #{{ hit.explanation.rank }}):</div>
-                            
-                            <!-- Metadata Filters -->
-                            {% if hit.explanation.why_it_matched and hit.explanation.why_it_matched.metadata_filters %}
-                                <div class="mb-3">
-                                    <span class="text-gray-700 font-medium block mb-1">🏷️  Metadata Filters:</span>
-                                    <div class="text-xs text-gray-700 ml-3">
-                                        {% for filter_item in hit.explanation.why_it_matched.metadata_filters %}
-                                            <div class="py-0.5">✓ {{ filter_item }}</div>
-                                        {% endfor %}
-                                    </div>
-                                </div>
-                            {% endif %}
                             
                             <!-- Keyword Overlap -->
                             {% if hit.explanation.why_it_matched and hit.explanation.why_it_matched.keyword_overlap %}
@@ -256,13 +221,13 @@
             {% if total_pages > 1 %}
             <div class="mt-8 flex justify-center gap-2">
                 {% if page > 1 %}
-                    <a href="?q={{ q or '' }}&method={{ method or '' }}&status={{ status or '' }}&search_type={{ search_type }}&page={{ page - 1 }}" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 hover:text-blue-600 bg-white shadow-sm transition">Previous</a>
+                    <a href="?q={{ q or '' }}&method={{ method or '' }}&status={{ status or '' }}&search_type={{ search_type }}&sort={{ sort or '' }}&page={{ page - 1 }}" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 hover:text-blue-600 bg-white shadow-sm transition">Previous</a>
                 {% endif %}
                 
                 <span class="px-4 py-2 text-gray-600 font-medium">Page {{ page }} of {{ total_pages }}</span>
                 
                 {% if page < total_pages %}
-                    <a href="?q={{ q or '' }}&method={{ method or '' }}&status={{ status or '' }}&search_type={{ search_type }}&page={{ page + 1 }}" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 hover:text-blue-600 bg-white shadow-sm transition">Next</a>
+                    <a href="?q={{ q or '' }}&method={{ method or '' }}&status={{ status or '' }}&search_type={{ search_type }}&sort={{ sort or '' }}&page={{ page + 1 }}" class="px-4 py-2 border border-gray-300 rounded text-gray-600 hover:bg-gray-50 hover:text-blue-600 bg-white shadow-sm transition">Next</a>
                 {% endif %}
             </div>
             {% endif %}
