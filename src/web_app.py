@@ -3,12 +3,49 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from src.es_client import get_es_client, search_contracts, INDEX_NAME
-from src.rag import rag_answer
+from src.rag import rag_answer, _load_text_generation_pipeline
 import os
 import math
 from typing import List, Tuple
 
+
+# Load local .env file if present so environment vars like RAG_MODEL are available
+def _load_dotenv_if_present(env_path: str = ".env") -> None:
+    try:
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip().strip('"')
+                        # Do not overwrite existing environment variables
+                        os.environ.setdefault(k, v)
+    except Exception:
+        pass
+
+
+# Load .env early
+_load_dotenv_if_present()
+
 app = FastAPI(title="FTS Contract Search", description="Local search interface for UK public procurement data")
+
+
+@app.on_event("startup")
+async def preload_models() -> None:
+    """Warm the configured generation pipeline once so the first request is faster."""
+    model_name = os.environ.get("RAG_MODEL")
+    if not model_name:
+        return
+
+    try:
+        _load_text_generation_pipeline(model_name)
+        print(f"Preloaded RAG model: {model_name}")
+    except Exception as e:
+        print(f"Failed to preload RAG model '{model_name}': {e}")
 
 templates = Jinja2Templates(directory="templates")
 es = get_es_client()

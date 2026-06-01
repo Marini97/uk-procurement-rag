@@ -92,15 +92,155 @@
             <div class="space-y-4">
                 {% if rag_response %}
                 <div class="bg-white p-6 rounded-lg shadow-md border-l-4 border-blue-600">
-                    <h3 class="text-lg font-semibold text-blue-800 mb-2">RAG Answer</h3>
-                    <div class="prose text-sm text-gray-800 whitespace-pre-wrap">{{ rag_response.answer }}</div>
-                    {% if rag_response.sources %}
-                        <div class="mt-3 text-xs text-gray-500">Sources: {{ rag_response.sources | join(', ') }}</div>
-                    {% endif %}
-                    {% if rag_response.parsed_intent %}
-                        <div class="mt-2 text-xs text-gray-600">Parsed intent: {{ rag_response.parsed_intent }}</div>
-                    {% endif %}
-                </div>
+                    <h3 class="text-lg font-semibold text-blue-800 mb-3">What the RAG pipeline did</h3>
+                    {% set workflow = rag_response.workflow if rag_response.workflow is defined else {} %}
+                    {% if rag_response.status is defined %}
+                        <div class="p-3 bg-yellow-50 border border-yellow-200 rounded text-sm text-yellow-800">RAG answer is being generated (job {{ rag_response.job_id }}). Refresh the page to see the result.</div>
+                    {% else %}
+                    <div class="space-y-4 text-sm text-gray-800">
+                        <!-- Queries Being Searched (prominently displayed) -->
+                        {% if workflow.query_variations is defined and workflow.query_variations %}
+                            <div class="bg-blue-50 border-2 border-blue-300 rounded-lg p-4">
+                                <div class="text-xs uppercase tracking-wide text-blue-700 font-bold mb-3">Queries searched ({{ workflow.query_variations|length }})</div>
+                                <div class="space-y-2">
+                                    {% for variation in workflow.query_variations %}
+                                        <div class="flex items-start gap-3">
+                                            <div class="w-6 h-6 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">{{ loop.index }}</div>
+                                            <div class="font-mono text-xs bg-white border border-blue-200 px-3 py-2 rounded flex-1 text-gray-900 break-words">{{ variation }}</div>
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endif %}
+                    <!-- Original Query Intent -->
+                        {% set original_intent = workflow.original_intent if workflow.original_intent is defined else {} %}
+                        {% if original_intent %}
+                            <div class="bg-gray-50 border border-gray-100 rounded-lg p-3">
+                                <div class="text-xs uppercase tracking-wide text-gray-600 font-semibold mb-2">Original query parsed intent</div>
+                                <div class="space-y-2 text-xs">
+                                    {% if original_intent.filters %}
+                                        <div>
+                                            <span class="text-gray-500 font-medium">Filters:</span>
+                                            <div class="flex flex-wrap gap-1 mt-1">
+                                                {% for key, value in original_intent.filters.items() %}
+                                                    <span class="inline-block bg-blue-100 text-blue-800 px-2 py-0.5 rounded border border-blue-200">{{ key }}: {{ value }}</span>
+                                                {% endfor %}
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                    {% if original_intent.services %}
+                                        <div>
+                                            <span class="text-gray-500 font-medium">Services:</span>
+                                            <div class="flex flex-wrap gap-1 mt-1">
+                                                {% for service in original_intent.services %}
+                                                    <span class="inline-block bg-purple-100 text-purple-800 px-2 py-0.5 rounded border border-purple-200">{{ service }}</span>
+                                                {% endfor %}
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                    {% if original_intent.locations %}
+                                        <div>
+                                            <span class="text-gray-500 font-medium">Locations:</span>
+                                            <div class="flex flex-wrap gap-1 mt-1">
+                                                {% for location in original_intent.locations %}
+                                                    <span class="inline-block bg-green-100 text-green-800 px-2 py-0.5 rounded border border-green-200">{{ location }}</span>
+                                                {% endfor %}
+                                            </div>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        {% endif %}
+
+                        <!-- Query Variations and Their Intents (detailed breakdown) -->
+                        {% if workflow.query_variations is defined and workflow.query_variations|length > 1 %}
+                            <div>
+                                <div class="text-xs uppercase tracking-wide text-gray-600 font-semibold mb-2">Query-by-query intent breakdown</div>
+                                <div class="space-y-2">
+                                    {% set query_intents = workflow.query_intents if workflow.query_intents is defined else {} %}
+                                    {% for variation in workflow.query_variations %}
+                                        <div class="bg-white border border-gray-200 rounded-lg p-3">
+                                            <div class="font-bold text-xs text-gray-700 mb-2">Query {{ loop.index }}: {{ variation }}</div>
+                                            {% set intent = query_intents.get(variation, {}) %}
+                                            {% if intent and (intent.filters or intent.services or intent.locations) %}
+                                                <div class="space-y-1 text-xs pl-2 border-l-2 border-gray-300">
+                                                    {% if intent.filters %}
+                                                        <div>
+                                                            <span class="text-gray-600 font-medium">Filters:</span>
+                                                            <div class="flex flex-wrap gap-1 mt-0.5">
+                                                                {% for key, value in intent.filters.items() %}
+                                                                    <span class="inline-block bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded text-xs border border-blue-200">{{ key }}: {{ value }}</span>
+                                                                {% endfor %}
+                                                            </div>
+                                                        </div>
+                                                    {% endif %}
+                                                    {% if intent.services %}
+                                                        <div>
+                                                            <span class="text-gray-600 font-medium">Services:</span>
+                                                            <div class="flex flex-wrap gap-1 mt-0.5">
+                                                                {% for service in intent.services %}
+                                                                    <span class="inline-block bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded text-xs border border-purple-200">{{ service }}</span>
+                                                                {% endfor %}
+                                                            </div>
+                                                        </div>
+                                                    {% endif %}
+                                                </div>
+                                            {% else %}
+                                                <div class="text-xs text-gray-500 italic pl-2 border-l-2 border-gray-300">No distinct intent extracted</div>
+                                            {% endif %}
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        {% endif %}
+
+                        <!-- Summary Statistics -->
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+                            <div class="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                                <div class="text-xs uppercase tracking-wide text-blue-700 font-semibold">Searches run</div>
+                                <div class="text-xl font-bold text-blue-900">{{ workflow.searches_run if workflow.searches_run is defined else (rag_response.query_variations|length if rag_response.query_variations is defined else 0) }}</div>
+                            </div>
+                            <div class="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                                <div class="text-xs uppercase tracking-wide text-blue-700 font-semibold">Candidates evaluated</div>
+                                <div class="text-xl font-bold text-blue-900">{{ rag_response.total_candidates_evaluated if rag_response.total_candidates_evaluated is defined else 0 }}</div>
+                            </div>
+                            <div class="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                                <div class="text-xs uppercase tracking-wide text-blue-700 font-semibold">Top results kept</div>
+                                <div class="text-xl font-bold text-blue-900">{{ workflow.ranked_results|length if workflow.ranked_results is defined else (rag_response.sources|length if rag_response.sources is defined else 0) }}</div>
+                            </div>
+                        </div>
+
+                        {% if workflow.ranked_results is defined and workflow.ranked_results %}
+                            <div>
+                                <div class="text-xs uppercase tracking-wide text-gray-500 font-semibold mb-2">Ranked documents kept after deduplication</div>
+                                <div class="space-y-2">
+                                    {% for item in workflow.ranked_results %}
+                                        <div class="flex items-start gap-3 bg-gray-50 border border-gray-100 rounded-lg p-3">
+                                            <div class="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-sm flex-shrink-0">{{ item.rank }}</div>
+                                            <div>
+                                                <div class="font-semibold text-gray-900">{{ item.title }}</div>
+                                                <div class="text-xs text-gray-500">{{ item.buyer_name }} · {{ item.ocid }}</div>
+                                            </div>
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        {% endif %}
+
+                        <div class="text-xs text-gray-600 bg-gray-50 border border-gray-100 rounded-lg p-3">
+                            {% if workflow.expanded is defined and workflow.expanded %}
+                                Query expansion was {% if workflow.expanded %}enabled{% else %}disabled{% endif %}, and the pipeline searched each variation with the hybrid retriever.
+                            {% else %}
+                                The pipeline searched the query with the hybrid retriever and ranked the merged candidates.
+                            {% endif %}
+                        </div>
+
+                        {% if rag_response.parsed_intent %}
+                            <div class="text-xs text-gray-600">Parsed intent: {{ rag_response.parsed_intent }}</div>
+                        {% endif %}
+                    </div>
                 {% endif %}
                 {% for hit in results %}
                     {% set doc = hit._source if hit._source is defined else hit %}

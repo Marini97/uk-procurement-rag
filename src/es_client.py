@@ -829,6 +829,36 @@ def _run_aggregations(es: Elasticsearch, filters: list) -> dict:
     resp = es.search(index=INDEX_NAME, body=body)
     return resp.get("aggregations", {})
 
+def _normalize_score(hit: dict) -> float:
+    """
+    Normalize relevance scores to 0-1 range for consistent comparison across search types.
+    
+    - RRF scores: 1/(k+rank), typical range 0.016-0.033 → scale to 0-1
+    - BM25 scores: 0-50+ → cap at 20 and normalize  
+    - Cosine similarity: 0-1 → already normalized
+    """
+    if hit.get("_rrf_score") is not None:
+        # RRF score: scale from ~0.03 max to 1.0
+        # Max possible RRF = 1/61 + 1/61 ≈ 0.0328 (top rank in both lists)
+        rrf = hit["_rrf_score"]
+        normalized = min(rrf / 0.033, 1.0)  # Cap at 1.0
+        return round(normalized, 4)
+    
+    if hit.get("_score") is not None:
+        es_score = hit["_score"]
+        # For semantic search, _score is already cosine similarity (0-1)
+        # For BM25, _score can be very high, so cap and normalize
+        if es_score <= 1.0:
+            # Already normalized (semantic search)
+            return round(es_score, 4)
+        else:
+            # BM25 score: normalize to 0-1 with reasonable cap
+            # Most BM25 scores are 0-20, but can exceed 50
+            normalized = min(es_score / 20.0, 1.0)
+            return round(normalized, 4)
+    
+    return 0.0
+
 
 # ---------------------------------------------------------------------------
 # Response formatting
@@ -846,6 +876,7 @@ def _format_response(hits: list, total: int, aggs: dict, intent: dict) -> dict:
             "No summary available"
         )
         results.append({
+            "contract_id":        source.get("contract_id"),
             "notice_id":          source.get("notice_id"),
             "ocid":               source.get("ocid"),
             "title":              source.get("title"),
@@ -860,7 +891,7 @@ def _format_response(hits: list, total: int, aggs: dict, intent: dict) -> dict:
             "cpv_codes":          source.get("cpv_codes", []),
             "cpv_descriptions":   source.get("cpv_descriptions", []),
             "classification_codes": source.get("classification_codes", []),
-            "relevance_score":    hit.get("_rrf_score") or hit.get("_score"),
+            "relevance_score":    _normalize_score(hit),
             "explanation":        _build_explanation(hit, rank, intent),
         })
 

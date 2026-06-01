@@ -4,7 +4,7 @@
       "id": "nhs_care_home_placements",
       "query": "NHS care home placements direct award",
       "relevant_ocids": [
-        "ocds-h6vhtk-04a3e9"
+        "ocds-h6vhtk-04a3e9", "ocds-h6vhtk-04f73c", "ocds-h6vhtk-05ff51"
       ],
       "notes": "Checks buyer and service intent on the NHS care home contract"
     },
@@ -12,7 +12,7 @@
       "id": "school_cleaning_services",
       "query": "school cleaning services through a DPS",
       "relevant_ocids": [
-        "ocds-h6vhtk-02f9a2"
+        "ocds-h6vhtk-02f9a2", "ocds-h6vhtk-05e241", "ocds-h6vhtk-0691bc"
       ],
       "notes": "Tests paraphrase matching for building support and school cleaning"
     },
@@ -20,7 +20,7 @@
       "id": "cable_run_management",
       "query": "cable run management systems for transport infrastructure",
       "relevant_ocids": [
-        "ocds-h6vhtk-051b02"
+        "ocds-h6vhtk-051b02", "ocds-h6vhtk-06a1b0", "ocds-h6vhtk-051b02"
       ],
       "notes": "Checks topical retrieval for a transport engineering contract"
     },
@@ -28,7 +28,7 @@
       "id": "remote_monitoring_cameras",
       "query": "low power remote image collection cameras for monitoring",
       "relevant_ocids": [
-        "ocds-h6vhtk-038759"
+        "ocds-h6vhtk-038759", "ocds-h6vhtk-038b08", "ocds-h6vhtk-03559e"
       ],
       "notes": "Exercises lexical and semantic matching on the specialised camera contract"
     },
@@ -36,7 +36,7 @@
       "id": "utility_dynamic_market_framework",
       "query": "utilities dynamic market for goods works and services",
       "relevant_ocids": [
-        "ocds-h6vhtk-04e7a8"
+        "ocds-h6vhtk-04e7a8", "ocds-h6vhtk-0552e4", "ocds-h6vhtk-050b32"
       ],
       "notes": "Checks framework-like terminology and utilities procurement intent"
     },
@@ -44,9 +44,17 @@
       "id": "buyer_specific_tfl",
       "query": "Transport for London cable management contract",
       "relevant_ocids": [
-        "ocds-h6vhtk-051b02"
+        "ocds-h6vhtk-051b02", "ocds-h6vhtk-03cfe0", "ocds-h6vhtk-05ee2a"
       ],
       "notes": "Tests buyer-specific retrieval with a named organisation"
+    },
+    {
+      "id": "buyer_specific_london_construction",
+      "query": "Contracts awarded in London for construction",
+      "relevant_ocids": [
+        "ocds-h6vhtk-042cc4", "ocds-h6vhtk-037dc3", "ocds-h6vhtk-0614e5"
+      ],
+      "notes": "Checks buyer-specific retrieval with a location-based query"
     }
   ]
 }
